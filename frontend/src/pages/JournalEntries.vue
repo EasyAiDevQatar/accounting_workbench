@@ -76,7 +76,7 @@
           <button
             type="button"
             class="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-600/25 transition hover:bg-blue-700"
-            @click="goDesk('/app/journal-entry/new')"
+            @click="openJeCreate"
           >
             + New Journal Entry
           </button>
@@ -257,7 +257,7 @@
                     <button
                       type="button"
                       class="font-mono text-sm font-semibold text-blue-600 hover:underline"
-                      @click="goDesk(`/app/journal-entry/${encodeURIComponent(row.name)}`)"
+                      @click="openJeRow(row)"
                     >
                       {{ row.name }}
                     </button>
@@ -279,9 +279,9 @@
                     <button
                       type="button"
                       class="text-xs font-semibold text-blue-600 hover:underline"
-                      @click="goDesk(`/app/journal-entry/${encodeURIComponent(row.name)}`)"
+                      @click="openJeRow(row)"
                     >
-                      Open
+                      {{ row.docstatus === 1 ? 'View' : 'Edit' }}
                     </button>
                   </td>
                 </tr>
@@ -332,9 +332,19 @@
         </section>
 
         <footer class="mt-8 border-t border-slate-200/80 pt-5 text-xs text-slate-500">
-          Same ERPNext documents · open any row in Desk for full detail.
+          Drafts: edit in the modal. Submitted entries: view here or open in Desk for cancel/amend.
         </footer>
       </div>
+
+      <JournalEntryModal
+        v-model="jeModalOpen"
+        :company="company"
+        :mode="jeModalMode"
+        :entry-name="jeModalEntryName"
+        @saved="load"
+        @deleted="load"
+        @switch-edit="jeModalMode = 'edit'"
+      />
 
       <!-- Right rail -->
       <aside
@@ -379,6 +389,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { frappeRequest } from 'frappe-ui'
 import ExpenseDonut from '@/components/ExpenseDonut.vue'
+import JournalEntryModal from '@/components/JournalEntryModal.vue'
 import { currentMonthBounds } from '@/utils/dateRange'
 
 const headerSearch = ref('')
@@ -397,6 +408,23 @@ const filterOwner = ref('')
 
 const page = ref(1)
 const pageSize = 8
+
+const jeModalOpen = ref(false)
+const jeModalMode = ref('create')
+const jeModalEntryName = ref(null)
+
+function openJeCreate() {
+  if (!company.value) return
+  jeModalMode.value = 'create'
+  jeModalEntryName.value = null
+  jeModalOpen.value = true
+}
+
+function openJeRow(row) {
+  jeModalMode.value = row.docstatus === 1 ? 'view' : 'edit'
+  jeModalEntryName.value = row.name
+  jeModalOpen.value = true
+}
 
 const months = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')
 

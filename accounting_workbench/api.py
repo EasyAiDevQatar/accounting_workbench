@@ -507,6 +507,33 @@ def _pct_delta(cur, prev):
 
 
 @frappe.whitelist()
+def journal_entry_form_meta(company=None):
+	"""Naming series and voucher types for the workbench Journal Entry modal."""
+	if not frappe.has_permission("Journal Entry", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = company or frappe.defaults.get_user_default("Company") or _first_company()
+	meta = frappe.get_meta("Journal Entry")
+	ns_field = meta.get_field("naming_series")
+	naming_series = []
+	if ns_field and ns_field.options:
+		naming_series = [x.strip() for x in ns_field.options.split("\n") if x.strip()]
+	vt_field = meta.get_field("voucher_type")
+	voucher_types = []
+	if vt_field and vt_field.options:
+		voucher_types = [x.strip() for x in vt_field.options.split("\n") if x.strip()]
+
+	currency = frappe.db.get_value("Company", company, "default_currency") or ""
+
+	return {
+		"company": company,
+		"currency": currency,
+		"naming_series": naming_series,
+		"voucher_types": voucher_types,
+	}
+
+
+@frappe.whitelist()
 def journal_entries_dashboard(
 	company=None,
 	from_date=None,
