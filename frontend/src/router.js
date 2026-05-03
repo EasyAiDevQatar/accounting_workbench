@@ -21,12 +21,7 @@ const routes = [
       {
         path: 'journal',
         name: 'journal',
-        component: () => import('@/pages/StubDesk.vue'),
-        props: {
-          title: 'Journal Entries',
-          subtitle: 'Standard Desk form · quick-entry UI coming next.',
-          deskRoute: '/app/journal-entry',
-        },
+        component: () => import('@/pages/JournalEntries.vue'),
       },
       {
         path: 'invoices',

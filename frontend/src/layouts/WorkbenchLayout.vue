@@ -62,16 +62,16 @@ async function logout() {
 }
 
 const nav = [
-  { to: '/', label: 'Dashboard', icon: '◉' },
-  { to: '/journal', label: 'Journal Entries', icon: '≡' },
-  { to: '/invoices', label: 'Invoices', icon: '▤' },
-  { to: '/bills', label: 'Bills', icon: '▥' },
-  { to: '/payments', label: 'Payments', icon: '¤' },
-  { to: '/bank', label: 'Bank Reconciliation', icon: '⌁' },
-  { to: '/coa', label: 'Chart of Accounts', icon: '▦' },
-  { to: '/budget', label: 'Budget', icon: '▧' },
-  { to: '/reports', label: 'Reports', icon: '▨' },
-  { to: '/period-close', label: 'Period Close', icon: '◷' },
-  { to: '/settings', label: 'Settings', icon: '⚙' },
+  { to: { name: 'dashboard' }, label: 'Dashboard', icon: '◉' },
+  { to: { name: 'journal' }, label: 'Journal Entries', icon: '≡' },
+  { to: { name: 'invoices' }, label: 'Invoices', icon: '▤' },
+  { to: { name: 'bills' }, label: 'Bills', icon: '▥' },
+  { to: { name: 'payments' }, label: 'Payments', icon: '¤' },
+  { to: { name: 'bank' }, label: 'Bank Reconciliation', icon: '⌁' },
+  { to: { name: 'coa' }, label: 'Chart of Accounts', icon: '▦' },
+  { to: { name: 'budget' }, label: 'Budget', icon: '▧' },
+  { to: { name: 'reports' }, label: 'Reports', icon: '▨' },
+  { to: { name: 'period-close' }, label: 'Period Close', icon: '◷' },
+  { to: { name: 'settings' }, label: 'Settings', icon: '⚙' },
 ]
 </script>

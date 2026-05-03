@@ -7,7 +7,7 @@
         class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center pt-1"
       >
         <div class="text-[11px] font-medium uppercase tracking-wide text-slate-400">Total</div>
-        <div class="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{{ totalMoney }}</div>
+        <div class="mt-0.5 text-lg font-bold tabular-nums text-slate-900">{{ centerLabel }}</div>
       </div>
       <div
         v-else
@@ -40,6 +40,8 @@ import { Doughnut } from 'vue-chartjs'
 const props = defineProps({
   rows: { type: Array, default: () => [] },
   currency: { type: String, default: 'USD' },
+  /** When set, replaces currency-formatted total in the center (e.g. journal entry counts). */
+  centerText: { type: String, default: '' },
 })
 
 const colors = [
@@ -117,4 +119,8 @@ const totalMoney = computed(() => {
     return t.toLocaleString(undefined, { maximumFractionDigits: 0 })
   }
 })
+
+const centerLabel = computed(() =>
+  props.centerText ? props.centerText : totalMoney.value,
+)
 </script>

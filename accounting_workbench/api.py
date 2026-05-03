@@ -6,6 +6,7 @@ from datetime import timedelta
 import frappe
 import frappe.sessions
 from frappe import _
+from frappe.model.db_query import DatabaseQuery
 from frappe.utils import flt, getdate
 
 
@@ -437,3 +438,276 @@ def _alerts(company):
 			}
 		)
 	return alerts
+
+
+def _je_type_bucket(voucher_type: str | None) -> str:
+	vt = voucher_type or "Journal Entry"
+	adjusting = {
+		"Depreciation Entry",
+		"Write Off Entry",
+		"Deferred Revenue",
+		"Deferred Expense",
+		"Excise Entry",
+		"Exchange Rate Revaluation",
+		"Exchange Gain Or Loss",
+	}
+	reversing = {"Debit Note", "Credit Note"}
+	closing = {"Opening Entry"}
+	if vt in adjusting:
+		return "Adjusting"
+	if vt in reversing:
+		return "Reversing"
+	if vt in closing:
+		return "Closing"
+	return "General"
+
+
+def _je_period_agg(company, start, end):
+	row = frappe.db.sql(
+		"""
+		select
+			count(*) as total,
+			coalesce(sum(case when docstatus = 1 then 1 else 0 end), 0) as posted,
+			coalesce(sum(case when docstatus = 0 then 1 else 0 end), 0) as draft,
+			coalesce(sum(case when docstatus = 1 then total_debit else 0 end), 0) as total_debit,
+			coalesce(sum(case when docstatus = 1 then total_credit else 0 end), 0) as total_credit
+		from `tabJournal Entry`
+		where company = %s and posting_date between %s and %s
+		""",
+		(company, start, end),
+		as_dict=True,
+	)
+	return row[0] if row else {}
+
+
+def _pct_delta(cur, prev):
+	if prev == 0:
+		return round(100.0 if cur else 0.0, 1)
+	return round((cur - prev) / abs(prev) * 100, 1)
+
+
+@frappe.whitelist()
+def journal_entries_dashboard(
+	company=None,
+	from_date=None,
+	to_date=None,
+	status=None,
+	voucher_type=None,
+	owner=None,
+	search=None,
+	limit_start=None,
+	limit_page_length=None,
+):
+	"""Journal Entries workbench page: KPIs, type breakdown, paginated list."""
+	if not frappe.has_permission("Journal Entry", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = company or frappe.defaults.get_user_default("Company") or _first_company()
+	if not company:
+		frappe.throw(_("No Company found"))
+
+	from_date = getdate(from_date) if from_date else getdate(frappe.utils.today())
+	to_date = getdate(to_date) if to_date else getdate(frappe.utils.today())
+	if from_date > to_date:
+		from_date, to_date = to_date, from_date
+
+	prev_span = (to_date - from_date).days + 1
+	prev_end = from_date - timedelta(days=1)
+	prev_start = prev_end - timedelta(days=prev_span - 1)
+
+	cur = _je_period_agg(company, from_date, to_date)
+	prev = _je_period_agg(company, prev_start, prev_end)
+
+	t_total = int(cur.get("total") or 0)
+	t_posted = int(cur.get("posted") or 0)
+	t_draft = int(cur.get("draft") or 0)
+	t_deb = flt(cur.get("total_debit"))
+	t_cred = flt(cur.get("total_credit"))
+
+	p_total = int(prev.get("total") or 0)
+	p_posted = int(prev.get("posted") or 0)
+	p_draft = int(prev.get("draft") or 0)
+	p_deb = flt(prev.get("total_debit"))
+	p_cred = flt(prev.get("total_credit"))
+
+	kpis = [
+		{
+			"id": "total",
+			"label": _("Total Journal Entries"),
+			"value": t_total,
+			"delta_pct": _pct_delta(t_total, p_total),
+			"format": "int",
+		},
+		{
+			"id": "posted",
+			"label": _("Posted Entries"),
+			"value": t_posted,
+			"delta_pct": _pct_delta(t_posted, p_posted),
+			"format": "int",
+		},
+		{
+			"id": "draft",
+			"label": _("Draft Entries"),
+			"value": t_draft,
+			"delta_pct": _pct_delta(t_draft, p_draft),
+			"format": "int",
+		},
+		{
+			"id": "debit",
+			"label": _("Total Debit"),
+			"value": t_deb,
+			"delta_pct": _pct_delta(t_deb, p_deb),
+			"format": "money",
+		},
+		{
+			"id": "credit",
+			"label": _("Total Credit"),
+			"value": t_cred,
+			"delta_pct": _pct_delta(t_cred, p_cred),
+			"format": "money",
+		},
+	]
+
+	rows_vt = frappe.db.sql(
+		"""
+		select voucher_type, count(*) as c
+		from `tabJournal Entry`
+		where company = %s and posting_date between %s and %s and docstatus = 1
+		group by voucher_type
+		""",
+		(company, from_date, to_date),
+		as_dict=True,
+	)
+	buckets = {"General": 0, "Adjusting": 0, "Reversing": 0, "Closing": 0}
+	for r in rows_vt:
+		buckets[_je_type_bucket(r.voucher_type)] += int(r.c or 0)
+
+	type_total = sum(buckets.values()) or 1
+	by_type = []
+	for name in ("General", "Adjusting", "Reversing", "Closing"):
+		v = buckets[name]
+		if not v:
+			continue
+		by_type.append(
+			{
+				"name": name,
+				"value": float(v),
+				"pct": round(v / type_total * 100, 1),
+			}
+		)
+
+	currency = frappe.db.get_value("Company", company, "default_currency") or ""
+
+	meta = frappe.get_meta("Journal Entry")
+	vt_field = meta.get_field("voucher_type")
+	voucher_types = []
+	if vt_field and vt_field.options:
+		voucher_types = [x.strip() for x in vt_field.options.split("\n") if x.strip()]
+
+	owners = [
+		r[0]
+		for r in frappe.db.sql(
+			"""
+			select distinct owner from `tabJournal Entry`
+			where company = %s
+			order by owner asc
+			limit 200
+			""",
+			company,
+		)
+	]
+
+	filters: dict = {
+		"company": company,
+		"posting_date": ["between", [from_date, to_date]],
+	}
+	st = (status or "").strip().lower()
+	if st == "posted":
+		filters["docstatus"] = 1
+	elif st == "draft":
+		filters["docstatus"] = 0
+
+	if voucher_type:
+		filters["voucher_type"] = voucher_type
+	if owner:
+		filters["owner"] = owner
+
+	or_filters = []
+	if search and str(search).strip():
+		term = str(search).strip()
+		wild = f"%{term}%"
+		or_filters = [["name", "like", wild], ["user_remark", "like", wild]]
+
+	ls = int(limit_start or 0)
+	lp = int(limit_page_length or 8)
+	lp = min(max(lp, 1), 100)
+
+	entries = frappe.get_list(
+		"Journal Entry",
+		filters=filters,
+		or_filters=or_filters or None,
+		fields=[
+			"name",
+			"posting_date",
+			"voucher_type",
+			"docstatus",
+			"total_debit",
+			"total_credit",
+			"owner",
+			"user_remark",
+			"bill_no",
+		],
+		order_by="posting_date desc, modified desc",
+		limit_start=ls,
+		limit_page_length=lp,
+	)
+
+	partial_query = DatabaseQuery("Journal Entry").execute(
+		filters=filters,
+		or_filters=or_filters or [],
+		fields=["`tabJournal Entry`.name"],
+		order_by="posting_date desc",
+		limit_start=0,
+		limit_page_length=None,
+		run=False,
+	)
+	total_rows = int(frappe.db.sql(f"select count(*) from ({partial_query}) _awb_je_cnt")[0][0])
+
+	parents = [e["name"] for e in entries]
+	first_acc = {}
+	if parents:
+		acc_rows = frappe.db.sql(
+			"""
+			select jea.parent, jea.account
+			from `tabJournal Entry Account` jea
+			inner join (
+				select parent, min(idx) as midx
+				from `tabJournal Entry Account`
+				where parent in ({})
+				group by parent
+			) x on x.parent = jea.parent and x.midx = jea.idx
+			""".format(",".join(["%s"] * len(parents))),
+			tuple(parents),
+			as_dict=False,
+		)
+		first_acc = {a[0]: a[1] for a in acc_rows}
+
+	for e in entries:
+		ref = e.get("user_remark") or e.get("bill_no") or ""
+		e["reference"] = ref
+		e["first_account"] = first_acc.get(e["name"]) or ""
+
+	return {
+		"company": company,
+		"currency": currency,
+		"from_date": str(from_date),
+		"to_date": str(to_date),
+		"previous_period_label": _human_date_range(prev_start, prev_end),
+		"kpis": kpis,
+		"by_type": by_type,
+		"posted_total_for_chart": int(type_total) if sum(buckets.values()) else 0,
+		"entries": entries,
+		"total_rows": int(total_rows),
+		"voucher_types": voucher_types,
+		"owners": owners,
+	}
