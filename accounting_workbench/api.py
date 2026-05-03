@@ -1,13 +1,33 @@
 # Copyright (c) 2026, Author and contributors
 # For license information, please see license.txt
 
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 
 import frappe
 import frappe.sessions
 from frappe import _
 from frappe.model.db_query import DatabaseQuery
 from frappe.utils import flt, getdate
+
+
+def _parse_range_date(value):
+	"""Coerce request date to datetime.date. Invalid/empty/non-string values fall back to today."""
+	if value is None:
+		return getdate()
+	if isinstance(value, datetime):
+		return value.date()
+	if isinstance(value, date):
+		return value
+	if isinstance(value, str):
+		raw = value.strip()
+		if not raw:
+			return getdate()
+		try:
+			parsed = getdate(raw)
+			return parsed if parsed is not None else getdate()
+		except Exception:
+			return getdate()
+	return getdate()
 
 
 @frappe.whitelist(allow_guest=False)
@@ -34,8 +54,8 @@ def dashboard_summary(company=None, from_date=None, to_date=None):
 	if not company:
 		return _empty_summary(_("No Company found"))
 
-	from_date = getdate(from_date) if from_date else getdate(frappe.utils.today())
-	to_date = getdate(to_date) if to_date else getdate(frappe.utils.today())
+	from_date = _parse_range_date(from_date)
+	to_date = _parse_range_date(to_date)
 	if from_date > to_date:
 		from_date, to_date = to_date, from_date
 
@@ -506,8 +526,8 @@ def journal_entries_dashboard(
 	if not company:
 		frappe.throw(_("No Company found"))
 
-	from_date = getdate(from_date) if from_date else getdate(frappe.utils.today())
-	to_date = getdate(to_date) if to_date else getdate(frappe.utils.today())
+	from_date = _parse_range_date(from_date)
+	to_date = _parse_range_date(to_date)
 	if from_date > to_date:
 		from_date, to_date = to_date, from_date
 

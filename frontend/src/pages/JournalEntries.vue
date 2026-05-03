@@ -379,6 +379,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { frappeRequest } from 'frappe-ui'
 import ExpenseDonut from '@/components/ExpenseDonut.vue'
+import { currentMonthBounds } from '@/utils/dateRange'
 
 const headerSearch = ref('')
 const company = ref('')
@@ -478,14 +479,6 @@ const pageNumbers = computed(() => {
 
 function goDesk(route) {
   window.location.href = `${window.location.origin}${route}`
-}
-
-function monthBounds() {
-  const d = new Date()
-  const start = new Date(d.getFullYear(), d.getMonth(), 1)
-  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0)
-  const iso = (x) => x.toISOString().slice(0, 10)
-  return { from: iso(start), to: iso(end) }
 }
 
 function kpiIcon(id) {
@@ -593,7 +586,7 @@ watch([filterStatus, filterVoucherType, filterOwner], () => {
 })
 
 onMounted(async () => {
-  const m = monthBounds()
+  const m = currentMonthBounds()
   fromDate.value = m.from
   toDate.value = m.to
   await loadCompanies()
