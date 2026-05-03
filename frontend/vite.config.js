@@ -10,7 +10,8 @@ const common = JSON.parse(fs.readFileSync(path.join(sitesDir, 'common_site_confi
 // https://vitejs.dev/config/
 export default defineConfig(({ command }) => ({
   plugins: [vue()],
-  base: command === 'serve' ? '/' : '/accounting-workbench/',
+  // Production assets are served from sites/assets via symlink; keep browser URLs at /accounting-workbench/* (see router base).
+  base: command === 'serve' ? '/' : '/assets/accounting_workbench/workbench/',
   server: {
     port: 8080,
     proxy: getProxyOptions({ port: common.webserver_port }),

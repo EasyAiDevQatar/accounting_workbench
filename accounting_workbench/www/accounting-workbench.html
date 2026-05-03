@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>{{ title }}</title>
+	{% if workbench_missing_build %}
+	<style>
+		body { font-family: system-ui, sans-serif; padding: 2rem; max-width: 40rem; margin: auto; line-height: 1.5; }
+		code { background: #f0f0f0; padding: 0.15rem 0.35rem; border-radius: 4px; }
+	</style>
+	{% else %}
+	{% for tag in workbench_head_tags %}
+	{{ tag | safe }}
+	{% endfor %}
+	{% endif %}
+</head>
+<body>
+	{% if workbench_missing_build %}
+	<h1>Accounting Workbench</h1>
+	<p>The SPA bundle was not found. Build the frontend and sync assets:</p>
+	<pre><code>cd apps/accounting_workbench/frontend && yarn install && yarn build
+bench build --app accounting_workbench</code></pre>
+	{% else %}
+	<div id="app"></div>
+	<div id="modals"></div>
+	<div id="popovers"></div>
+	<script>
+		window.csrf_token = window.csrf_token || ''
+	</script>
+	<!-- csrf_token -->
+	{% endif %}
+</body>
+</html>

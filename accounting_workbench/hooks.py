@@ -93,6 +93,12 @@ after_migrate = "accounting_workbench.install.after_migrate"
 # before_uninstall = "accounting_workbench.uninstall.before_uninstall"
 # after_uninstall = "accounting_workbench.uninstall.after_uninstall"
 
+# Website SPA — /accounting-workbench and deep links (assets load from /assets/accounting_workbench/workbench/)
+website_route_rules = [
+	{"from_route": "/accounting-workbench/<path:subpath>", "to_route": "accounting-workbench"},
+	{"from_route": "/accounting-workbench", "to_route": "accounting-workbench"},
+]
+
 # Integration Setup
 # ------------------
 # To set up dependencies/integrations with other apps

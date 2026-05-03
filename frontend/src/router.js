@@ -117,8 +117,11 @@ const routes = [
   },
 ]
 
+// BASE_URL points at /assets/.../workbench/ in production; Vue history must match the public website path.
+const historyBase = import.meta.env.DEV ? '/' : '/accounting-workbench/'
+
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  history: createWebHistory(historyBase),
   routes,
 })
 
