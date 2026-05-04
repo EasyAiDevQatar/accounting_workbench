@@ -64,12 +64,13 @@
 import { computed } from 'vue'
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from '@headlessui/vue'
 import { useHelp } from '@/composables/useHelp'
-import { marked } from 'marked'
+import showdown from 'showdown'
 
 const { isOpen, currentTitle, currentContent, closeHelp } = useHelp()
+const md = new showdown.Converter()
 
 const renderedContent = computed(() => {
   if (!currentContent.value) return ''
-  return marked.parse(currentContent.value)
+  return md.makeHtml(currentContent.value)
 })
 </script>
