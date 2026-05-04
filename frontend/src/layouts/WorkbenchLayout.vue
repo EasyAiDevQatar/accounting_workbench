@@ -21,18 +21,23 @@
         </div>
       </div>
       <nav class="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-4">
-        <RouterLink
-          v-for="item in nav"
-          :key="item.to"
-          :to="item.to"
-          class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
-          active-class="!bg-blue-50 !text-blue-700 !shadow-sm ring-1 ring-blue-100"
-        >
-          <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-[15px]">
-            {{ item.icon }}
-          </span>
-          {{ item.label }}
-        </RouterLink>
+        <template v-for="section in navSections" :key="section.label">
+          <div class="px-3 pt-3 pb-1 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-400">
+            {{ section.label }}
+          </div>
+          <RouterLink
+            v-for="item in section.items"
+            :key="item.to.name"
+            :to="item.to"
+            class="flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+            active-class="!bg-blue-50 !text-blue-700 !shadow-sm ring-1 ring-blue-100"
+          >
+            <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-100 text-[15px]">
+              {{ item.icon }}
+            </span>
+            {{ item.label }}
+          </RouterLink>
+        </template>
       </nav>
       <div class="mx-3 mb-4 rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 to-white p-4 shadow-sm">
         <div class="text-2xl" aria-hidden="true">🚀</div>
@@ -40,38 +45,98 @@
         <p class="mt-1 text-xs leading-relaxed text-slate-600">
           {{ clicksSaved }} clicks saved since yesterday.
         </p>
+        <div class="mt-3">
+          <HelpButton :title="helpTitle" :content="helpContent" />
+        </div>
       </div>
     </aside>
     <div class="flex min-h-screen min-w-0 flex-1 flex-col">
-      <router-view />
+      <main class="flex-1 overflow-y-auto">
+        <router-view />
+      </main>
     </div>
+    <HelpDrawer />
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { logoutSession } from '@/auth'
+import HelpButton from '@/components/HelpButton.vue'
+import HelpDrawer from '@/components/HelpDrawer.vue'
 
 const router = useRouter()
+const route = useRoute()
 const clicksSaved = ref(3)
+
+const helpTitle = computed(() => {
+  return route.meta?.helpTitle || 'Accounting Workbench Help'
+})
+
+const helpContent = computed(() => {
+  return route.meta?.helpContent || 'Welcome to the Accounting Workbench. Select a module from the sidebar to get started.'
+})
 
 async function logout() {
   await logoutSession()
   router.push({ name: 'login' })
 }
 
-const nav = [
-  { to: { name: 'dashboard' }, label: 'Dashboard', icon: '◉' },
-  { to: { name: 'journal' }, label: 'Journal Entries', icon: '≡' },
-  { to: { name: 'invoices' }, label: 'Invoices', icon: '▤' },
-  { to: { name: 'bills' }, label: 'Bills', icon: '▥' },
-  { to: { name: 'payments' }, label: 'Payments', icon: '¤' },
-  { to: { name: 'bank' }, label: 'Bank Reconciliation', icon: '⌁' },
-  { to: { name: 'coa' }, label: 'Chart of Accounts', icon: '▦' },
-  { to: { name: 'budget' }, label: 'Budget', icon: '▧' },
-  { to: { name: 'reports' }, label: 'Reports', icon: '▨' },
-  { to: { name: 'period-close' }, label: 'Period Close', icon: '◷' },
-  { to: { name: 'settings' }, label: 'Settings', icon: '⚙' },
+const navSections = [
+  {
+    label: 'Overview',
+    items: [
+      { to: { name: 'dashboard' }, label: 'Dashboard', icon: '◉' },
+      { to: { name: 'journal' }, label: 'Journal Entries', icon: '≡' },
+    ],
+  },
+  {
+    label: 'Receivables',
+    items: [
+      { to: { name: 'invoices' }, label: 'Invoices', icon: '▤' },
+      { to: { name: 'customers' }, label: 'Customers', icon: '☷' },
+    ],
+  },
+  {
+    label: 'Payables',
+    items: [
+      { to: { name: 'bills' }, label: 'Bills', icon: '▥' },
+      { to: { name: 'suppliers' }, label: 'Suppliers', icon: '☵' },
+      { to: { name: 'payments' }, label: 'Payments', icon: '¤' },
+    ],
+  },
+  {
+    label: 'Banking',
+    items: [
+      { to: { name: 'bank' }, label: 'Bank Reconciliation', icon: '⌁' },
+      { to: { name: 'bank-accounts' }, label: 'Bank Accounts', icon: '◫' },
+      { to: { name: 'bank-transactions' }, label: 'Bank Transactions', icon: '◬' },
+    ],
+  },
+  {
+    label: 'Masters',
+    items: [
+      { to: { name: 'coa' }, label: 'Chart of Accounts', icon: '▦' },
+      { to: { name: 'companies' }, label: 'Companies', icon: '▩' },
+      { to: { name: 'fiscal-years' }, label: 'Fiscal Years', icon: '◶' },
+      { to: { name: 'dimensions' }, label: 'Dimensions', icon: '◱' },
+    ],
+  },
+  {
+    label: 'Controls',
+    items: [
+      { to: { name: 'budget' }, label: 'Budget', icon: '▧' },
+      { to: { name: 'accounting-periods' }, label: 'Accounting Periods', icon: '◲' },
+      { to: { name: 'period-close' }, label: 'Period Close', icon: '◷' },
+    ],
+  },
+  {
+    label: 'Reporting',
+    items: [
+      { to: { name: 'reports' }, label: 'Reports', icon: '▨' },
+      { to: { name: 'settings' }, label: 'Settings', icon: '⚙' },
+    ],
+  },
 ]
 </script>

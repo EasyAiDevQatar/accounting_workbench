@@ -1,13 +1,14 @@
 # Copyright (c) 2026, Author and contributors
 # For license information, please see license.txt
 
+import json
 from datetime import date, datetime, timedelta
 
 import frappe
 import frappe.sessions
 from frappe import _
 from frappe.model.db_query import DatabaseQuery
-from frappe.utils import flt, getdate
+from frappe.utils import cint, flt, getdate
 
 
 def _parse_range_date(value):
@@ -329,7 +330,7 @@ def _tasks(company):
 				"title": _("Submit draft journal entries"),
 				"count": je_d,
 				"priority": "high",
-				"route": "/app/journal-entry",
+				"route": "/journal",
 			}
 		)
 	pe_d = frappe.db.count("Payment Entry", {"company": company, "docstatus": 0})
@@ -339,7 +340,7 @@ def _tasks(company):
 				"title": _("Review draft payments"),
 				"count": pe_d,
 				"priority": "medium",
-				"route": "/app/payment-entry",
+				"route": "/payments",
 			}
 		)
 	return tasks
@@ -758,3 +759,921 @@ def journal_entries_dashboard(
 		"voucher_types": voucher_types,
 		"owners": owners,
 	}
+
+@frappe.whitelist()
+def get_coa_tree(company):
+	"""Returns the full Chart of Accounts tree for a company."""
+	if not frappe.has_permission("Account", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	accounts = frappe.get_all("Account", 
+		filters={"company": company},
+		fields=["name", "account_name", "parent_account", "is_group", "root_type", "account_type", "account_currency"],
+		order_by="lft"
+	)
+	
+	# Build tree
+	tree = []
+	acc_map = {}
+	for acc in accounts:
+		acc["children"] = []
+		acc_map[acc.name] = acc
+		
+	for acc in accounts:
+		if acc.parent_account and acc.parent_account in acc_map:
+			acc_map[acc.parent_account]["children"].append(acc)
+		else:
+			tree.append(acc)
+			
+	return tree
+
+@frappe.whitelist()
+def get_party_outstanding(party_type, party, company):
+	"""Fetches unpaid invoices for a party."""
+	from erpnext.accounts.utils import get_outstanding_invoices
+	return get_outstanding_invoices(party_type, party, company)
+
+@frappe.whitelist()
+def submit_invoice(data):
+	"""Unified endpoint to create and submit an invoice."""
+	import json
+	if isinstance(data, str):
+		data = json.loads(data)
+		
+	doctype = "Sales Invoice" if data.get("type") == "Sales" else "Purchase Invoice"
+	
+	doc = frappe.new_doc(doctype)
+	doc.company = data.get("company")
+	if doctype == "Sales Invoice":
+		doc.customer = data.get("party")
+	else:
+		doc.supplier = data.get("party")
+		
+	doc.posting_date = data.get("posting_date") or frappe.utils.today()
+	doc.due_date = data.get("due_date")
+	
+	for item in data.get("items", []):
+		doc.append("items", {
+			"item_code": item.get("item_code"),
+			"qty": item.get("qty"),
+			"rate": item.get("rate"),
+			"cost_center": item.get("cost_center")
+		})
+		
+	if data.get("taxes_and_charges"):
+		doc.taxes_and_charges = data.get("taxes_and_charges")
+		doc.set_taxes()
+		
+	doc.save()
+	doc.submit()
+	return doc.name
+
+@frappe.whitelist()
+def create_payment_with_allocation(data):
+	"""Creates a Payment Entry and allocates it to invoices."""
+	import json
+	if isinstance(data, str):
+		data = json.loads(data)
+		
+	pe = frappe.new_doc("Payment Entry")
+	pe.payment_type = data.get("payment_type") # "Receive" or "Pay"
+	pe.company = data.get("company")
+	pe.posting_date = data.get("posting_date") or frappe.utils.today()
+	pe.mode_of_payment = data.get("mode_of_payment")
+	pe.party_type = data.get("party_type")
+	pe.party = data.get("party")
+	pe.paid_amount = data.get("paid_amount")
+	pe.received_amount = data.get("received_amount")
+	
+	if pe.payment_type == "Receive":
+		pe.paid_to = data.get("bank_account")
+	else:
+		pe.paid_from = data.get("bank_account")
+		
+	# ERPNext helper to set missing values
+	pe.setup_party_account_field()
+	pe.set_missing_values()
+	
+	for alloc in data.get("allocations", []):
+		pe.append("references", {
+			"reference_doctype": alloc.get("voucher_type"),
+			"reference_name": alloc.get("voucher_no"),
+			"allocated_amount": alloc.get("allocated_amount")
+		})
+		
+	pe.save()
+	pe.submit()
+	return pe.name
+
+@frappe.whitelist()
+def submit_journal_entry(data):
+	"""Validates and submits a Journal Entry."""
+	import json
+	from frappe.utils import flt
+	
+	if isinstance(data, str):
+		data = json.loads(data)
+		
+	je = frappe.new_doc("Journal Entry")
+	je.company = data.get("company")
+	je.posting_date = data.get("posting_date") or frappe.utils.today()
+	je.voucher_type = data.get("voucher_type", "Journal Entry")
+	je.user_remark = data.get("user_remark")
+	
+	total_debit = 0
+	total_credit = 0
+	
+	for acc in data.get("accounts", []):
+		debit = flt(acc.get("debit", 0))
+		credit = flt(acc.get("credit", 0))
+		total_debit += debit
+		total_credit += credit
+		
+		je.append("accounts", {
+			"account": acc.get("account"),
+			"party_type": acc.get("party_type"),
+			"party": acc.get("party"),
+			"debit_in_account_currency": debit,
+			"credit_in_account_currency": credit,
+			"cost_center": acc.get("cost_center")
+		})
+		
+	if abs(total_debit - total_credit) > 0.001:
+		frappe.throw(_("Total Debit must equal Total Credit"))
+		
+	je.save()
+	je.submit()
+	return je.name
+
+
+def _resolve_company(company=None):
+	return company or frappe.defaults.get_user_default("Company") or _first_company()
+
+
+def _invoice_doctype(invoice_type):
+	return "Purchase Invoice" if (invoice_type or "").strip().lower() in {"purchase", "bill", "bills"} else "Sales Invoice"
+
+
+def _invoice_party_field(doctype):
+	return "supplier" if doctype == "Purchase Invoice" else "customer"
+
+
+def _status_to_filter(status):
+	st = (status or "").strip().lower()
+	if st == "draft":
+		return {"docstatus": 0}
+	if st in {"submitted", "posted"}:
+		return {"docstatus": 1}
+	if st in {"cancelled", "canceled"}:
+		return {"docstatus": 2}
+	return {}
+
+
+@frappe.whitelist()
+def coa_workspace(company=None):
+	"""Chart of Accounts tree + account balances for the selected company."""
+	company = _resolve_company(company)
+	if not company:
+		return {"company": None, "currency": "", "tree": [], "summary": {}}
+	if not frappe.has_permission("Account", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	tree = get_coa_tree(company)
+	currency = frappe.db.get_value("Company", company, "default_currency") or ""
+
+	balance_rows = frappe.db.sql(
+		"""
+		select account, coalesce(sum(debit), 0) - coalesce(sum(credit), 0) as balance
+		from `tabGL Entry`
+		where company = %s and is_cancelled = 0
+		group by account
+		""",
+		company,
+		as_dict=True,
+	)
+	balance_map = {r.account: flt(r.balance) for r in balance_rows}
+
+	total_accounts = 0
+	leaf_accounts = 0
+
+	def attach_balance(nodes):
+		nonlocal total_accounts, leaf_accounts
+		for node in nodes:
+			total_accounts += 1
+			if not cint(node.get("is_group")):
+				leaf_accounts += 1
+			node["balance"] = flt(balance_map.get(node.get("name"), 0))
+			children = node.get("children") or []
+			if children:
+				attach_balance(children)
+
+	attach_balance(tree)
+
+	return {
+		"company": company,
+		"currency": currency,
+		"tree": tree,
+		"summary": {
+			"total_accounts": total_accounts,
+			"leaf_accounts": leaf_accounts,
+			"group_accounts": total_accounts - leaf_accounts,
+		},
+	}
+
+
+@frappe.whitelist()
+def invoice_workspace(
+	invoice_type="Sales",
+	company=None,
+	party=None,
+	status=None,
+	from_date=None,
+	to_date=None,
+	search=None,
+	limit_start=None,
+	limit_page_length=None,
+):
+	"""Invoice list payload for Sales/Purchase with ERPNext-compatible fields."""
+	doctype = _invoice_doctype(invoice_type)
+	if not frappe.has_permission(doctype, "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = _resolve_company(company)
+	if not company:
+		frappe.throw(_("No Company found"))
+	party_field = _invoice_party_field(doctype)
+
+	from_date = _parse_range_date(from_date)
+	to_date = _parse_range_date(to_date)
+	if from_date > to_date:
+		from_date, to_date = to_date, from_date
+
+	filters = {
+		"company": company,
+		"posting_date": ["between", [from_date, to_date]],
+	}
+	filters.update(_status_to_filter(status))
+	if party:
+		filters[party_field] = party
+
+	or_filters = None
+	if search and str(search).strip():
+		wild = f"%{str(search).strip()}%"
+		or_filters = [["name", "like", wild], [party_field, "like", wild]]
+
+	ls = int(limit_start or 0)
+	lp = min(max(int(limit_page_length or 20), 1), 100)
+
+	fields = [
+		"name",
+		"posting_date",
+		"due_date",
+		party_field,
+		"grand_total",
+		"outstanding_amount",
+		"currency",
+		"status",
+		"docstatus",
+	]
+	rows = frappe.get_list(
+		doctype,
+		filters=filters,
+		or_filters=or_filters,
+		fields=fields,
+		order_by="posting_date desc, modified desc",
+		limit_start=ls,
+		limit_page_length=lp,
+	)
+
+	for r in rows:
+		r["party"] = r.get(party_field)
+		r["invoice_type"] = "Purchase" if doctype == "Purchase Invoice" else "Sales"
+
+	partial_query = DatabaseQuery(doctype).execute(
+		filters=filters,
+		or_filters=or_filters or [],
+		fields=[f"`tab{doctype}`.name"],
+		order_by="posting_date desc",
+		limit_start=0,
+		limit_page_length=None,
+		run=False,
+	)
+	total_rows = int(frappe.db.sql(f"select count(*) from ({partial_query}) _awb_inv_cnt")[0][0])
+
+	return {
+		"company": company,
+		"currency": frappe.db.get_value("Company", company, "default_currency") or "",
+		"invoice_type": "Purchase" if doctype == "Purchase Invoice" else "Sales",
+		"from_date": str(from_date),
+		"to_date": str(to_date),
+		"entries": rows,
+		"total_rows": total_rows,
+	}
+
+
+@frappe.whitelist()
+def invoice_form_meta(invoice_type="Sales", company=None):
+	"""Metadata required to create Sales/Purchase invoices with child tables."""
+	doctype = _invoice_doctype(invoice_type)
+	if not frappe.has_permission(doctype, "create"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = _resolve_company(company)
+	party_doctype = "Supplier" if doctype == "Purchase Invoice" else "Customer"
+	tax_template_doctype = (
+		"Purchase Taxes and Charges Template"
+		if doctype == "Purchase Invoice"
+		else "Sales Taxes and Charges Template"
+	)
+
+	parties = frappe.get_list(party_doctype, fields=["name"], limit_page_length=200, order_by="name asc")
+	items = frappe.get_list("Item", fields=["name", "item_name", "stock_uom"], limit_page_length=200, order_by="name asc")
+	cost_centers = frappe.get_list(
+		"Cost Center",
+		filters={"company": company, "is_group": 0},
+		fields=["name"],
+		limit_page_length=200,
+		order_by="name asc",
+	)
+	tax_templates = frappe.get_list(
+		tax_template_doctype,
+		fields=["name"],
+		limit_page_length=200,
+		order_by="name asc",
+	)
+
+	return {
+		"company": company,
+		"currency": frappe.db.get_value("Company", company, "default_currency") or "",
+		"invoice_type": "Purchase" if doctype == "Purchase Invoice" else "Sales",
+		"party_doctype": party_doctype,
+		"tax_template_doctype": tax_template_doctype,
+		"parties": parties,
+		"items": items,
+		"cost_centers": cost_centers,
+		"tax_templates": tax_templates,
+	}
+
+
+@frappe.whitelist()
+def payment_workspace(
+	company=None,
+	party_type=None,
+	party=None,
+	payment_type=None,
+	from_date=None,
+	to_date=None,
+	limit_start=None,
+	limit_page_length=None,
+):
+	"""Payment list plus party outstanding references for allocation UI."""
+	if not frappe.has_permission("Payment Entry", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = _resolve_company(company)
+	if not company:
+		frappe.throw(_("No Company found"))
+
+	from_date = _parse_range_date(from_date)
+	to_date = _parse_range_date(to_date)
+	if from_date > to_date:
+		from_date, to_date = to_date, from_date
+
+	filters = {"company": company, "posting_date": ["between", [from_date, to_date]]}
+	if payment_type:
+		filters["payment_type"] = payment_type
+	if party_type:
+		filters["party_type"] = party_type
+	if party:
+		filters["party"] = party
+
+	ls = int(limit_start or 0)
+	lp = min(max(int(limit_page_length or 20), 1), 100)
+	entries = frappe.get_list(
+		"Payment Entry",
+		filters=filters,
+		fields=[
+			"name",
+			"posting_date",
+			"payment_type",
+			"party_type",
+			"party",
+			"paid_from",
+			"paid_to",
+			"paid_amount",
+			"received_amount",
+			"docstatus",
+			"status",
+		],
+		order_by="posting_date desc, modified desc",
+		limit_start=ls,
+		limit_page_length=lp,
+	)
+	total_rows = frappe.db.count("Payment Entry", filters=filters)
+
+	outstanding = []
+	if party_type and party:
+		from erpnext.accounts.doctype.payment_entry.payment_entry import get_outstanding_reference_documents
+
+		outstanding = get_outstanding_reference_documents(
+			{
+				"company": company,
+				"party_type": party_type,
+				"party": party,
+				"payment_type": payment_type or "Receive",
+				"get_outstanding_invoices": 1,
+			}
+		)
+
+	mode_of_payments = frappe.get_list("Mode of Payment", fields=["name"], limit_page_length=200, order_by="name asc")
+	bank_accounts = frappe.get_list(
+		"Account",
+		filters={"company": company, "is_group": 0, "account_type": ["in", ["Bank", "Cash"]]},
+		fields=["name", "account_name", "account_type"],
+		limit_page_length=500,
+		order_by="name asc",
+	)
+	customers = frappe.get_list("Customer", fields=["name"], limit_page_length=200, order_by="name asc")
+	suppliers = frappe.get_list("Supplier", fields=["name"], limit_page_length=200, order_by="name asc")
+
+	return {
+		"company": company,
+		"currency": frappe.db.get_value("Company", company, "default_currency") or "",
+		"from_date": str(from_date),
+		"to_date": str(to_date),
+		"entries": entries,
+		"total_rows": total_rows,
+		"outstanding": outstanding or [],
+		"options": {
+			"mode_of_payments": mode_of_payments,
+			"bank_accounts": bank_accounts,
+			"customers": customers,
+			"suppliers": suppliers,
+		},
+	}
+
+
+def _resolve_date_range(from_date=None, to_date=None):
+	from_dt = _parse_range_date(from_date)
+	to_dt = _parse_range_date(to_date)
+	if from_dt > to_dt:
+		from_dt, to_dt = to_dt, from_dt
+	return from_dt, to_dt
+
+
+@frappe.whitelist()
+def bank_reconciliation_workspace(company=None, from_date=None, to_date=None, status=None, limit_page_length=None):
+	"""Bank reconciliation cockpit data based on Bank Transaction."""
+	if not frappe.has_permission("Bank Transaction", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = _resolve_company(company)
+	from_dt, to_dt = _resolve_date_range(from_date, to_date)
+	filters = {"company": company, "date": ["between", [from_dt, to_dt]]}
+	if status:
+		filters["status"] = status
+
+	limit = min(max(int(limit_page_length or 100), 1), 500)
+	entries = frappe.get_list(
+		"Bank Transaction",
+		filters=filters,
+		fields=[
+			"name",
+			"date",
+			"bank_account",
+			"description",
+			"deposit",
+			"withdrawal",
+			"unallocated_amount",
+			"status",
+		],
+		order_by="date desc, modified desc",
+		limit_page_length=limit,
+	)
+
+	pending_count = frappe.db.count("Bank Transaction", {"company": company, "status": "Pending"})
+	unreconciled_count = frappe.db.count("Bank Transaction", {"company": company, "status": "Unreconciled"})
+	unallocated_total = (
+		frappe.db.sql(
+			"""
+			select coalesce(sum(unallocated_amount), 0)
+			from `tabBank Transaction`
+			where company=%s and status in ('Pending', 'Unreconciled')
+			""",
+			company,
+		)[0][0]
+		or 0
+	)
+
+	return {
+		"company": company,
+		"currency": frappe.db.get_value("Company", company, "default_currency") or "",
+		"from_date": str(from_dt),
+		"to_date": str(to_dt),
+		"kpis": {
+			"pending_count": int(pending_count or 0),
+			"unreconciled_count": int(unreconciled_count or 0),
+			"unallocated_total": flt(unallocated_total),
+			"in_period_count": len(entries),
+		},
+		"entries": entries,
+		"statuses": ["Pending", "Unreconciled", "Reconciled"],
+	}
+
+
+@frappe.whitelist()
+def budget_workspace(company=None, fiscal_year=None, limit_page_length=None):
+	"""Budget workspace data (kpis + list) for budget control page."""
+	if not frappe.has_permission("Budget", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = _resolve_company(company)
+	filters = {"company": company}
+	if fiscal_year:
+		filters["fiscal_year"] = fiscal_year
+
+	limit = min(max(int(limit_page_length or 100), 1), 500)
+	budgets = frappe.get_list(
+		"Budget",
+		filters=filters,
+		fields=["name", "fiscal_year", "action_if_annual_budget_exceeded", "applicable_on_material_request", "docstatus"],
+		order_by="modified desc",
+		limit_page_length=limit,
+	)
+
+	submitted = sum(1 for b in budgets if cint(b.get("docstatus")) == 1)
+	drafts = sum(1 for b in budgets if cint(b.get("docstatus")) == 0)
+
+	return {
+		"company": company,
+		"fiscal_year": fiscal_year,
+		"kpis": {
+			"total_budgets": len(budgets),
+			"submitted_budgets": submitted,
+			"draft_budgets": drafts,
+		},
+		"entries": budgets,
+		"fiscal_years": frappe.get_list("Fiscal Year", fields=["name"], order_by="year_start_date desc", limit_page_length=200),
+	}
+
+
+@frappe.whitelist()
+def period_close_workspace(company=None, from_date=None, to_date=None, limit_page_length=None):
+	"""Period close page payload from Period Closing Voucher and Accounting Period."""
+	if not frappe.has_permission("Period Closing Voucher", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = _resolve_company(company)
+	from_dt, to_dt = _resolve_date_range(from_date, to_date)
+	limit = min(max(int(limit_page_length or 100), 1), 500)
+
+	vouchers = frappe.get_list(
+		"Period Closing Voucher",
+		filters={"company": company, "posting_date": ["between", [from_dt, to_dt]]},
+		fields=["name", "posting_date", "fiscal_year", "period_start_date", "period_end_date", "docstatus"],
+		order_by="posting_date desc",
+		limit_page_length=limit,
+	)
+	periods = frappe.get_list(
+		"Accounting Period",
+		fields=["name", "start_date", "end_date", "closed"],
+		order_by="start_date desc",
+		limit_page_length=limit,
+	)
+
+	return {
+		"company": company,
+		"from_date": str(from_dt),
+		"to_date": str(to_dt),
+		"kpis": {
+			"period_close_vouchers": len(vouchers),
+			"submitted_vouchers": sum(1 for x in vouchers if cint(x.get("docstatus")) == 1),
+			"closed_periods": sum(1 for p in periods if cint(p.get("closed")) == 1),
+		},
+		"vouchers": vouchers,
+		"accounting_periods": periods,
+	}
+
+
+@frappe.whitelist()
+def settings_workspace(company=None):
+	"""Settings data for Company, Fiscal Year and Accounting Dimensions defaults."""
+	if not frappe.has_permission("Company", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	company = _resolve_company(company)
+	company_doc = frappe.get_doc("Company", company) if company else None
+	active_fy = frappe.db.get_value(
+		"Fiscal Year",
+		{"year_start_date": ["<=", getdate()], "year_end_date": [">=", getdate()]},
+		"name",
+		order_by="year_start_date desc",
+	)
+	dimensions = frappe.get_list(
+		"Accounting Dimension",
+		fields=["name", "document_type", "disabled"],
+		order_by="creation asc",
+		limit_page_length=200,
+	)
+
+	return {
+		"company": company,
+		"company_defaults": {
+			"default_currency": getattr(company_doc, "default_currency", None),
+			"country": getattr(company_doc, "country", None),
+			"cost_center": getattr(company_doc, "cost_center", None),
+		},
+		"active_fiscal_year": active_fy,
+		"dimensions": dimensions,
+		"fiscal_years": frappe.get_list("Fiscal Year", fields=["name", "year_start_date", "year_end_date"], order_by="year_start_date desc", limit_page_length=200),
+		"companies": frappe.get_list("Company", fields=["name"], order_by="name asc", limit_page_length=200),
+	}
+
+
+_ACCOUNTS_REPORT_ALLOWLIST = {
+	"General Ledger",
+	"Trial Balance",
+	"Profit and Loss Statement",
+	"Balance Sheet",
+	"Cash Flow",
+	"Accounts Receivable",
+	"Accounts Payable",
+}
+
+
+@frappe.whitelist()
+def reports_explorer_meta(company=None):
+	"""Report explorer metadata including allowlisted report names."""
+	company = _resolve_company(company)
+	return {
+		"company": company,
+		"reports": sorted(_ACCOUNTS_REPORT_ALLOWLIST),
+		"companies": frappe.get_list("Company", fields=["name"], order_by="name asc", limit_page_length=200),
+	}
+
+
+@frappe.whitelist()
+def run_accounts_report(report_name, filters=None):
+	"""Run allowlisted accounts reports using ERPNext report runner."""
+	if report_name not in _ACCOUNTS_REPORT_ALLOWLIST:
+		frappe.throw(_("Report not allowed"))
+	if not frappe.has_permission("Report", "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	if isinstance(filters, str):
+		import json
+
+		filters = json.loads(filters)
+	filters = filters or {}
+
+	from frappe.desk.query_report import run
+
+	return run(report_name=report_name, filters=filters)
+
+
+_DESKLESS_DOCTYPES = {
+	"Sales Invoice",
+	"Purchase Invoice",
+	"Payment Entry",
+	"Journal Entry",
+	"Budget",
+	"Period Closing Voucher",
+	"Bank Transaction",
+	"Customer",
+	"Supplier",
+	"Bank Account",
+	"Fiscal Year",
+	"Accounting Dimension",
+	"Account",
+	"Company",
+	"Accounting Period",
+}
+
+_FIELDTYPE_SKIP = {
+	"Section Break",
+	"Column Break",
+	"Tab Break",
+	"Button",
+	"Read Only",
+	"HTML",
+	"Heading",
+	"Fold",
+}
+
+
+def _parse_json_like(value, default):
+	if value is None:
+		return default
+	if isinstance(value, str):
+		raw = value.strip()
+		if not raw:
+			return default
+		return json.loads(raw)
+	return value
+
+
+def _assert_supported_doctype(doctype):
+	if doctype not in _DESKLESS_DOCTYPES:
+		frappe.throw(_("Unsupported doctype: {0}").format(doctype))
+
+
+def _link_options_for_field(df, company=None):
+	if df.fieldtype != "Link" or not df.options:
+		return []
+	if df.options.startswith("[") or df.options.startswith("dynamic"):
+		return []
+	link_doctype = df.options
+	if not frappe.db.exists("DocType", link_doctype):
+		return []
+	if not frappe.has_permission(link_doctype, "read"):
+		return []
+
+	filters = {}
+	if company and frappe.db.has_column(link_doctype, "company"):
+		filters["company"] = company
+
+	try:
+		return frappe.get_list(link_doctype, filters=filters, fields=["name"], order_by="modified desc", limit_page_length=200)
+	except Exception:
+		return []
+
+
+def _field_payload(df, company=None):
+	default_value = df.default
+	if isinstance(default_value, str):
+		raw_default = default_value.strip()
+		# Ignore unresolved dynamic placeholders like ":Company" in deskless forms.
+		if raw_default.startswith(":"):
+			default_value = ""
+		else:
+			default_value = raw_default
+	return {
+		"fieldname": df.fieldname,
+		"label": df.label or df.fieldname,
+		"fieldtype": df.fieldtype,
+		"options": df.options,
+		"reqd": cint(df.reqd),
+		"default": default_value,
+		"options_list": _link_options_for_field(df, company=company),
+	}
+
+
+def _required_parent_fields(meta, company=None):
+	fields = []
+	for df in meta.fields:
+		if not df.fieldname:
+			continue
+		if df.fieldtype in _FIELDTYPE_SKIP:
+			continue
+		if df.fieldtype == "Table":
+			continue
+		if cint(df.reqd):
+			fields.append(_field_payload(df, company=company))
+	return fields
+
+
+def _required_child_tables(meta, company=None):
+	tables = []
+	for df in meta.fields:
+		if df.fieldtype != "Table" or not df.options:
+			continue
+		child_meta = frappe.get_meta(df.options)
+		required_child_fields = []
+		for cdf in child_meta.fields:
+			if not cdf.fieldname:
+				continue
+			if cdf.fieldtype in _FIELDTYPE_SKIP or cdf.fieldtype == "Table":
+				continue
+			if cint(cdf.reqd):
+				required_child_fields.append(_field_payload(cdf, company=company))
+		if required_child_fields:
+			tables.append(
+				{
+					"fieldname": df.fieldname,
+					"label": df.label or df.fieldname,
+					"child_doctype": df.options,
+					"fields": required_child_fields,
+				}
+			)
+	return tables
+
+
+def _default_list_fields(meta):
+	candidate = ["name"]
+	preferred = ["posting_date", "due_date", "status", "docstatus", "owner", "modified", "company", "customer", "supplier", "party"]
+	fieldnames = {f.fieldname for f in meta.fields if f.fieldname and f.fieldtype not in _FIELDTYPE_SKIP and f.fieldtype != "Table"}
+	for fname in preferred:
+		if fname in fieldnames and fname not in candidate:
+			candidate.append(fname)
+	for f in meta.fields:
+		if len(candidate) >= 8:
+			break
+		if not f.fieldname or f.fieldname in candidate:
+			continue
+		if f.fieldtype in _FIELDTYPE_SKIP or f.fieldtype == "Table":
+			continue
+		if f.fieldtype in {"Data", "Link", "Select", "Date", "Currency", "Float", "Int", "Check"}:
+			candidate.append(f.fieldname)
+	return candidate
+
+
+@frappe.whitelist()
+def doctype_required_meta(doctype, company=None):
+	"""Required field metadata for deskless create pages."""
+	_assert_supported_doctype(doctype)
+	if not frappe.has_permission(doctype, "create"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	meta = frappe.get_meta(doctype)
+	return {
+		"doctype": doctype,
+		"title_field": meta.title_field,
+		"required_fields": _required_parent_fields(meta, company=company),
+		"required_child_tables": _required_child_tables(meta, company=company),
+	}
+
+
+@frappe.whitelist()
+def list_doctype_workspace(
+	doctype,
+	filters=None,
+	search=None,
+	limit_start=None,
+	limit_page_length=None,
+	order_by=None,
+):
+	"""Generic list endpoint for deskless module list pages."""
+	_assert_supported_doctype(doctype)
+	if not frappe.has_permission(doctype, "read"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	filters = _parse_json_like(filters, {}) or {}
+	search = (search or "").strip()
+	limit_start = int(limit_start or 0)
+	limit_page_length = min(max(int(limit_page_length or 50), 1), 200)
+	order_by = order_by or "modified desc"
+
+	meta = frappe.get_meta(doctype)
+	fields = _default_list_fields(meta)
+	or_filters = None
+	if search:
+		or_filters = [["name", "like", f"%{search}%"]]
+		if meta.title_field and meta.title_field != "name":
+			or_filters.append([meta.title_field, "like", f"%{search}%"])
+
+	rows = frappe.get_list(
+		doctype,
+		filters=filters,
+		or_filters=or_filters,
+		fields=fields,
+		order_by=order_by,
+		limit_start=limit_start,
+		limit_page_length=limit_page_length,
+	)
+	total_rows = frappe.db.count(doctype, filters=filters)
+	return {"doctype": doctype, "fields": fields, "rows": rows, "total_rows": total_rows}
+
+
+@frappe.whitelist()
+def save_doctype_doc(doctype, payload):
+	"""Save draft doctype document using payload fields and child rows."""
+	_assert_supported_doctype(doctype)
+	if not frappe.has_permission(doctype, "create"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+	payload = _parse_json_like(payload, {}) or {}
+	if not isinstance(payload, dict):
+		frappe.throw(_("Invalid payload"))
+
+	doc = frappe.new_doc(doctype)
+	for key, value in payload.items():
+		if key in {"doctype", "name"}:
+			continue
+		doc.set(key, value)
+	doc.save()
+	return {"name": doc.name, "docstatus": doc.docstatus}
+
+
+@frappe.whitelist()
+def submit_doctype_doc(doctype, payload=None, name=None):
+	"""Save and submit or submit existing document for supported doctypes."""
+	_assert_supported_doctype(doctype)
+	if not frappe.has_permission(doctype, "submit"):
+		frappe.throw(_("Not permitted"), frappe.PermissionError)
+
+	if name:
+		doc = frappe.get_doc(doctype, name)
+		if doc.docstatus == 0:
+			doc.submit()
+		return {"name": doc.name, "docstatus": doc.docstatus}
+
+	payload_data = _parse_json_like(payload, {}) or {}
+	if not isinstance(payload_data, dict):
+		frappe.throw(_("Invalid payload"))
+
+	doc = frappe.new_doc(doctype)
+	for key, value in payload_data.items():
+		if key in {"doctype", "name"}:
+			continue
+		doc.set(key, value)
+	doc.save()
+	doc.submit()
+	return {"name": doc.name, "docstatus": doc.docstatus}

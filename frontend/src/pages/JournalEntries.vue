@@ -76,14 +76,14 @@
           <button
             type="button"
             class="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-600/25 transition hover:bg-blue-700"
-            @click="openJeCreate"
+            @click="router.push({ name: 'journal-new' })"
           >
             + New Journal Entry
           </button>
           <button
             type="button"
             class="inline-flex items-center gap-2 rounded-xl border-2 border-emerald-500 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50"
-            @click="goDesk('/app/data-import-tool/Journal%20Entry')"
+            @click="goDesk({ name: 'journal-new' })"
           >
             <span class="text-base leading-none">⬆</span>
             Bulk Upload
@@ -91,7 +91,7 @@
           <button
             type="button"
             class="inline-flex items-center gap-2 rounded-xl border-2 border-violet-500 bg-white px-4 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-50"
-            @click="goDesk('/app/auto-repeat?reference_doctype=Journal%20Entry')"
+            @click="goDesk({ name: 'journal-new' })"
           >
             <span class="text-base leading-none">↻</span>
             Recurring Entries
@@ -99,7 +99,7 @@
           <button
             type="button"
             class="inline-flex items-center gap-2 rounded-xl border-2 border-emerald-600 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-50"
-            @click="goDesk('/app/data-import-tool/Journal%20Entry')"
+            @click="goDesk({ name: 'journal-new' })"
           >
             <span class="text-base leading-none">▦</span>
             Import from Excel
@@ -121,7 +121,7 @@
                 type="button"
                 class="block w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                 @click="
-                  goDesk('/app/journal-entry');
+                  goDesk({ name: 'journal' });
                   moreOpen = false
                 "
               >
@@ -131,7 +131,7 @@
                 type="button"
                 class="block w-full px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                 @click="
-                  goDesk('/app/query-report/General%20Ledger');
+                  goDesk({ name: 'reports', query: { report: 'General Ledger' } });
                   moreOpen = false
                 "
               >
@@ -229,7 +229,7 @@
               type="button"
               class="ml-auto inline-flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50"
               title="Column preferences"
-              @click="goDesk('/app/journal-entry')"
+              @click="goDesk({ name: 'journal' })"
             >
               ⚙
             </button>
@@ -387,12 +387,14 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { frappeRequest } from 'frappe-ui'
 import ExpenseDonut from '@/components/ExpenseDonut.vue'
 import JournalEntryModal from '@/components/JournalEntryModal.vue'
 import { currentMonthBounds } from '@/utils/dateRange'
 
 const headerSearch = ref('')
+const router = useRouter()
 const company = ref('')
 const companies = ref([])
 const fromDate = ref('')
@@ -434,28 +436,28 @@ const quickShortcuts = [
     sub: 'Create a standard journal entry',
     icon: '📝',
     iconBg: 'bg-blue-100 text-blue-700',
-    route: '/app/journal-entry/new',
+    route: { name: 'journal-new' },
   },
   {
     title: 'Adjusting Journal',
     sub: 'Period-end accruals & adjustments',
     icon: '⚖',
     iconBg: 'bg-teal-100 text-teal-700',
-    route: '/app/journal-entry/new',
+    route: { name: 'journal-new' },
   },
   {
     title: 'Reversing Journal',
     sub: 'Auto-reverse prior period entries',
     icon: '↩',
     iconBg: 'bg-orange-100 text-orange-700',
-    route: '/app/journal-entry/new',
+    route: { name: 'journal-new' },
   },
   {
     title: 'Closing Journal',
     sub: 'Year-end closing & allocations',
     icon: '🔒',
     iconBg: 'bg-violet-100 text-violet-700',
-    route: '/app/journal-entry/new',
+    route: { name: 'journal-new' },
   },
 ]
 
@@ -506,7 +508,11 @@ const pageNumbers = computed(() => {
 })
 
 function goDesk(route) {
-  window.location.href = `${window.location.origin}${route}`
+  if (typeof route === 'object' && route?.name) {
+    router.push(route)
+    return
+  }
+  router.push({ name: 'journal-new' })
 }
 
 function kpiIcon(id) {

@@ -73,42 +73,42 @@
           <button
             type="button"
             class="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-blue-600/25 transition hover:bg-blue-700"
-            @click="goDesk('/app/journal-entry')"
+            @click="goDesk({ name: 'journal-new' })"
           >
             + New Journal Entry
           </button>
           <button
             type="button"
             class="rounded-xl border-2 border-emerald-500 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-50"
-            @click="goDesk('/app/payment-entry')"
+            @click="goDesk({ name: 'payments-new' })"
           >
             Record Payment
           </button>
           <button
             type="button"
             class="rounded-xl border-2 border-blue-500 bg-white px-4 py-2.5 text-sm font-semibold text-blue-700 transition hover:bg-blue-50"
-            @click="goDesk('/app/sales-invoice')"
+            @click="goDesk({ name: 'invoices-new' })"
           >
             New Invoice
           </button>
           <button
             type="button"
             class="rounded-xl border-2 border-orange-500 bg-white px-4 py-2.5 text-sm font-semibold text-orange-700 transition hover:bg-orange-50"
-            @click="goDesk('/app/purchase-invoice')"
+            @click="goDesk({ name: 'bills-new' })"
           >
             Add Bill
           </button>
           <button
             type="button"
             class="rounded-xl border-2 border-violet-500 bg-white px-4 py-2.5 text-sm font-semibold text-violet-700 transition hover:bg-violet-50"
-            @click="goDesk('/app/bank-reconciliation-tool')"
+            @click="goDesk({ name: 'bank' })"
           >
             Reconcile Bank
           </button>
           <button
             type="button"
             class="rounded-xl border-2 border-red-500 bg-white px-4 py-2.5 text-sm font-semibold text-red-700 transition hover:bg-red-50"
-            @click="goDesk('/app/closing-voucher')"
+            @click="goDesk({ name: 'period-close-new' })"
           >
             Close Period
           </button>
@@ -348,6 +348,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { frappeRequest } from 'frappe-ui'
 import Sparkline from '@/components/Sparkline.vue'
 import CashFlowChart from '@/components/CashFlowChart.vue'
@@ -355,6 +356,7 @@ import ExpenseDonut from '@/components/ExpenseDonut.vue'
 import { currentMonthBounds } from '@/utils/dateRange'
 
 const searchQ = ref('')
+const router = useRouter()
 const company = ref('')
 const companies = ref([])
 const fromDate = ref('')
@@ -364,15 +366,15 @@ const error = ref('')
 const lastSynced = ref('')
 
 const shortcuts = [
-  { label: 'Trial Balance', route: '/app/query-report/Trial%20Balance', icon: '⚖' },
-  { label: 'Balance Sheet', route: '/app/query-report/Balance%20Sheet', icon: '▤' },
-  { label: 'Cash Flow', route: '/app/query-report/Cash%20Flow', icon: '≋' },
-  { label: 'P/L', route: '/app/query-report/Profit%20and%20Loss%20Statement', icon: '📈' },
-  { label: 'General Ledger', route: '/app/query-report/General%20Ledger', icon: '☰' },
-  { label: 'AR Summary', route: '/app/query-report/Accounts%20Receivable', icon: '⎆' },
-  { label: 'AP Summary', route: '/app/query-report/Accounts%20Payable', icon: '⎇' },
-  { label: 'Budget Variance', route: '/app/budget', icon: '◫' },
-  { label: 'Asset Report', route: '/app/query-report/Fixed%20Asset%20Register', icon: '🏭' },
+  { label: 'Trial Balance', route: { name: 'reports', query: { report: 'Trial Balance' } }, icon: '⚖' },
+  { label: 'Balance Sheet', route: { name: 'reports', query: { report: 'Balance Sheet' } }, icon: '▤' },
+  { label: 'Cash Flow', route: { name: 'reports', query: { report: 'Cash Flow' } }, icon: '≋' },
+  { label: 'P/L', route: { name: 'reports', query: { report: 'Profit and Loss Statement' } }, icon: '📈' },
+  { label: 'General Ledger', route: { name: 'reports', query: { report: 'General Ledger' } }, icon: '☰' },
+  { label: 'AR Summary', route: { name: 'reports', query: { report: 'Accounts Receivable' } }, icon: '⎆' },
+  { label: 'AP Summary', route: { name: 'reports', query: { report: 'Accounts Payable' } }, icon: '⎇' },
+  { label: 'Budget Variance', route: { name: 'budget' }, icon: '◫' },
+  { label: 'Asset Report', route: { name: 'reports' }, icon: '🏭' },
 ]
 
 const months = 'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')
@@ -424,7 +426,14 @@ function sparklineColor(id) {
 }
 
 function goDesk(route) {
-  window.location.href = `${window.location.origin}${route}`
+  if (typeof route === 'object' && route?.name) {
+    router.push(route)
+    return
+  }
+  const r = String(route || '')
+  if (r === '/journal') return void router.push({ name: 'journal' })
+  if (r === '/payments') return void router.push({ name: 'payments' })
+  router.push({ name: 'dashboard' })
 }
 
 function moneyFmt(v) {
